@@ -1,0 +1,16 @@
+.env
+.DS_Store
+
+# Data directories - contain server state, don't commit
+data/
+backups/
+
+# Node
+node_modules/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+copy_code.sh
