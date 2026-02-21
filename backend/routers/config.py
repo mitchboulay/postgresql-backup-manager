@@ -95,7 +95,6 @@ async def create_database(config: DatabaseConfig) -> Dict[str, Any]:
     """Create a new database configuration."""
     data = config.model_dump()
     data["id"] = str(uuid.uuid4())
-    data["schema"] = data.pop("schema_name")  # Rename field
 
     result = database.create_database(data)
     result["password"] = "********"
@@ -110,8 +109,6 @@ async def update_database(db_id: str, config: DatabaseUpdate) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail="Database not found")
 
     data = {k: v for k, v in config.model_dump().items() if v is not None}
-    if "schema_name" in data:
-        data["schema"] = data.pop("schema_name")
 
     result = database.update_database(db_id, data)
     if result:
@@ -143,7 +140,6 @@ async def test_database_connection(db_id: str) -> Dict[str, Any]:
 async def test_new_database_connection(config: DatabaseConfig) -> Dict[str, Any]:
     """Test a new database connection (before saving)."""
     data = config.model_dump()
-    data["schema"] = data.pop("schema_name")
 
     backup_service = get_backup_service()
     result = backup_service.test_connection(data)

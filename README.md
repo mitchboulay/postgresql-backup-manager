@@ -37,7 +37,7 @@ Dead simple by design. No agents, no daemons on your database servers, no comple
 ### Security Model
 
 **No secrets in code or config files.** Everything sensitive is:
-- Entered via the UI and stored in TinyDB (a local JSON file)
+- Entered via the UI and stored in SQLite (a local database file)
 - Never logged or exposed in API responses (passwords are masked)
 - Encrypted at rest if you enable backup encryption
 
@@ -52,11 +52,11 @@ Dead simple by design. No agents, no daemons on your database servers, no comple
 - Each backup file has unique salt and nonce
 - **You control the key** - we never see it, can't recover it for you
 
-### Why TinyDB?
+### Why SQLite?
 
-We use TinyDB (a JSON-based document store) instead of PostgreSQL or SQLite because:
+We use SQLite instead of PostgreSQL because:
 - Zero dependencies - no database server to maintain
-- Human-readable - you can literally `cat data/backup_manager.json`
+- Built-in concurrency - WAL mode handles multiple simultaneous backups
 - Portable - copy one file to migrate/backup the backup manager itself
 - Good enough - we're storing config and logs, not millions of rows
 
@@ -64,9 +64,9 @@ We use TinyDB (a JSON-based document store) instead of PostgreSQL or SQLite beca
 
 | Data | Location | Encrypted |
 |------|----------|-----------|
-| Database connection configs | `data/backup_manager.json` | No (but passwords masked in API) |
-| Backup schedules | `data/backup_manager.json` | No |
-| Backup history/logs | `data/backup_manager.json` | No |
+| Database connection configs | `data/backup_manager.db` | No (but passwords masked in API) |
+| Backup schedules | `data/backup_manager.db` | No |
+| Backup history/logs | `data/backup_manager.db` | No |
 | Actual backup files | `/backups/` (mounted volume) | Optional (AES-256) |
 | Off-site backup copies | S3 bucket | Same as local |
 
@@ -228,7 +228,7 @@ All configuration is done through the web UI:
 │  └──────────────┘        └────────┬─────────┘   │
 │                                   │             │
 │                          ┌────────▼─────────┐   │
-│                          │    TinyDB        │   │
+│                          │    SQLite        │   │
 │                          │  (config/logs)   │   │
 │                          └──────────────────┘   │
 │                                   │             │

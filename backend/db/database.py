@@ -1,57 +1,152 @@
 """
-TinyDB database for configuration and backup history.
+SQLite database for configuration and backup history.
+Thread-safe with built-in concurrency handling.
 """
 import os
-from datetime import datetime
+import sqlite3
+import json
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
-from tinydb import TinyDB, Query
-from tinydb.table import Document
+from contextlib import contextmanager
 
 # Database path
-DB_PATH = os.getenv("DB_PATH", "/data/backup_manager.json")
+DB_PATH = os.getenv("DB_PATH", "/data/backup_manager.db")
 
 
-def get_db() -> TinyDB:
-    """Get database instance."""
+def dict_factory(cursor, row):
+    """Convert SQLite rows to dictionaries."""
+    fields = [column[0] for column in cursor.description]
+    return {key: value for key, value in zip(fields, row)}
+
+
+@contextmanager
+def get_db():
+    """Get database connection with automatic cleanup."""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    return TinyDB(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn.row_factory = dict_factory
+    conn.execute("PRAGMA journal_mode=WAL")  # Better concurrency
+    conn.execute("PRAGMA busy_timeout=30000")  # Wait up to 30s for locks
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def init_db():
-    """Initialize database with default tables."""
-    db = get_db()
+    """Initialize database with tables."""
+    with get_db() as conn:
+        cursor = conn.cursor()
 
-    # Ensure tables exist
-    db.table("databases")
-    db.table("backups")
-    db.table("schedules")
-    db.table("settings")
-    db.table("logs")
+        # Databases table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS databases (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                host TEXT NOT NULL,
+                port INTEGER DEFAULT 5432,
+                database TEXT NOT NULL,
+                username TEXT NOT NULL,
+                password TEXT NOT NULL,
+                schema_name TEXT,
+                ssl_mode TEXT DEFAULT 'require',
+                created_at TEXT,
+                updated_at TEXT
+            )
+        """)
 
-    # Initialize default settings if not exist
-    settings = db.table("settings")
-    if not settings.all():
-        settings.insert({
-            "id": "global",
-            "encryption_enabled": False,
-            "encryption_key": None,
-            "s3_enabled": False,
-            "s3_bucket": None,
-            "s3_region": "us-east-1",
-            "s3_access_key": None,
-            "s3_secret_key": None,
-            "s3_prefix": "pg-backups/",
-            "backup_path": "/backups",
-            "retention_days": 30,
-            "retention_weeks": 4,
-            "retention_months": 12,
-            "notifications_enabled": False,
-            "discord_webhook": None,
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
-        })
+        # Backups table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS backups (
+                id TEXT PRIMARY KEY,
+                database_id TEXT,
+                database_name TEXT,
+                status TEXT,
+                file_name TEXT,
+                file_size INTEGER,
+                s3_uploaded INTEGER DEFAULT 0,
+                encrypted INTEGER DEFAULT 0,
+                started_at TEXT,
+                completed_at TEXT,
+                error TEXT,
+                created_at TEXT
+            )
+        """)
 
-    db.close()
+        # Schedules table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS schedules (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                database_id TEXT,
+                cron_expression TEXT,
+                enabled INTEGER DEFAULT 1,
+                description TEXT,
+                last_run TEXT,
+                last_status TEXT,
+                last_error TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )
+        """)
+
+        # Settings table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                id TEXT PRIMARY KEY,
+                encryption_enabled INTEGER DEFAULT 0,
+                encryption_key TEXT,
+                s3_enabled INTEGER DEFAULT 0,
+                s3_bucket TEXT,
+                s3_region TEXT DEFAULT 'us-east-1',
+                s3_access_key TEXT,
+                s3_secret_key TEXT,
+                s3_prefix TEXT DEFAULT 'pg-backups/',
+                backup_path TEXT DEFAULT '/backups',
+                retention_days INTEGER DEFAULT 30,
+                retention_weeks INTEGER DEFAULT 4,
+                retention_months INTEGER DEFAULT 12,
+                email_enabled INTEGER DEFAULT 0,
+                email_recipient TEXT,
+                email_sender TEXT,
+                aws_region TEXT DEFAULT 'us-east-1',
+                aws_access_key TEXT,
+                aws_secret_key TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )
+        """)
+
+        # Logs table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                level TEXT,
+                message TEXT,
+                backup_id TEXT,
+                extra TEXT
+            )
+        """)
+
+        # Create indexes
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_backups_database_id ON backups(database_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_backups_started_at ON backups(started_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level)")
+
+        # Initialize default settings if not exist
+        cursor.execute("SELECT id FROM settings WHERE id = 'global'")
+        if not cursor.fetchone():
+            now = datetime.utcnow().isoformat()
+            cursor.execute("""
+                INSERT INTO settings (id, created_at, updated_at)
+                VALUES ('global', ?, ?)
+            """, (now, now))
 
 
 # =============================================================================
@@ -60,49 +155,59 @@ def init_db():
 
 def get_databases() -> List[Dict[str, Any]]:
     """Get all configured databases."""
-    db = get_db()
-    result = db.table("databases").all()
-    db.close()
-    return result
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM databases ORDER BY name")
+        return cursor.fetchall()
 
 
 def get_database(db_id: str) -> Optional[Dict[str, Any]]:
     """Get a specific database configuration."""
-    db = get_db()
-    DBQuery = Query()
-    result = db.table("databases").get(DBQuery.id == db_id)
-    db.close()
-    return result
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM databases WHERE id = ?", (db_id,))
+        return cursor.fetchone()
 
 
 def create_database(data: Dict[str, Any]) -> Dict[str, Any]:
     """Create a new database configuration."""
-    db = get_db()
-    data["created_at"] = datetime.utcnow().isoformat()
-    data["updated_at"] = datetime.utcnow().isoformat()
-    db.table("databases").insert(data)
-    db.close()
-    return data
+    with get_db() as conn:
+        cursor = conn.cursor()
+        now = datetime.utcnow().isoformat()
+        data["created_at"] = now
+        data["updated_at"] = now
+
+        columns = ", ".join(data.keys())
+        placeholders = ", ".join(["?" for _ in data])
+        cursor.execute(
+            f"INSERT INTO databases ({columns}) VALUES ({placeholders})",
+            list(data.values())
+        )
+        return data
 
 
 def update_database(db_id: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a database configuration."""
-    db = get_db()
-    DBQuery = Query()
-    data["updated_at"] = datetime.utcnow().isoformat()
-    db.table("databases").update(data, DBQuery.id == db_id)
-    result = db.table("databases").get(DBQuery.id == db_id)
-    db.close()
-    return result
+    with get_db() as conn:
+        cursor = conn.cursor()
+        data["updated_at"] = datetime.utcnow().isoformat()
+
+        set_clause = ", ".join([f"{k} = ?" for k in data.keys()])
+        cursor.execute(
+            f"UPDATE databases SET {set_clause} WHERE id = ?",
+            list(data.values()) + [db_id]
+        )
+
+        cursor.execute("SELECT * FROM databases WHERE id = ?", (db_id,))
+        return cursor.fetchone()
 
 
 def delete_database(db_id: str) -> bool:
     """Delete a database configuration."""
-    db = get_db()
-    DBQuery = Query()
-    removed = db.table("databases").remove(DBQuery.id == db_id)
-    db.close()
-    return len(removed) > 0
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM databases WHERE id = ?", (db_id,))
+        return cursor.rowcount > 0
 
 
 # =============================================================================
@@ -111,47 +216,80 @@ def delete_database(db_id: str) -> bool:
 
 def get_backups(limit: int = 100, db_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Get backup history."""
-    db = get_db()
-    table = db.table("backups")
+    with get_db() as conn:
+        cursor = conn.cursor()
 
-    if db_id:
-        DBQuery = Query()
-        result = table.search(DBQuery.database_id == db_id)
-    else:
-        result = table.all()
+        if db_id:
+            cursor.execute(
+                "SELECT * FROM backups WHERE database_id = ? ORDER BY started_at DESC LIMIT ?",
+                (db_id, limit)
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM backups ORDER BY started_at DESC LIMIT ?",
+                (limit,)
+            )
 
-    # Sort by date descending
-    result = sorted(result, key=lambda x: x.get("started_at", ""), reverse=True)
-    db.close()
-    return result[:limit]
+        results = cursor.fetchall()
+        # Convert integer booleans back to Python bools
+        for r in results:
+            r["s3_uploaded"] = bool(r.get("s3_uploaded"))
+            r["encrypted"] = bool(r.get("encrypted"))
+        return results
 
 
 def create_backup_record(data: Dict[str, Any]) -> Dict[str, Any]:
     """Create a new backup record."""
-    db = get_db()
-    data["created_at"] = datetime.utcnow().isoformat()
-    db.table("backups").insert(data)
-    db.close()
-    return data
+    with get_db() as conn:
+        cursor = conn.cursor()
+        data["created_at"] = datetime.utcnow().isoformat()
+
+        # Convert booleans to integers for SQLite
+        if "s3_uploaded" in data:
+            data["s3_uploaded"] = int(data["s3_uploaded"])
+        if "encrypted" in data:
+            data["encrypted"] = int(data["encrypted"])
+
+        columns = ", ".join(data.keys())
+        placeholders = ", ".join(["?" for _ in data])
+        cursor.execute(
+            f"INSERT INTO backups ({columns}) VALUES ({placeholders})",
+            list(data.values())
+        )
+        return data
 
 
 def update_backup_record(backup_id: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a backup record."""
-    db = get_db()
-    DBQuery = Query()
-    db.table("backups").update(data, DBQuery.id == backup_id)
-    result = db.table("backups").get(DBQuery.id == backup_id)
-    db.close()
-    return result
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        # Convert booleans to integers for SQLite
+        if "s3_uploaded" in data:
+            data["s3_uploaded"] = int(data["s3_uploaded"])
+        if "encrypted" in data:
+            data["encrypted"] = int(data["encrypted"])
+
+        set_clause = ", ".join([f"{k} = ?" for k in data.keys()])
+        cursor.execute(
+            f"UPDATE backups SET {set_clause} WHERE id = ?",
+            list(data.values()) + [backup_id]
+        )
+
+        cursor.execute("SELECT * FROM backups WHERE id = ?", (backup_id,))
+        result = cursor.fetchone()
+        if result:
+            result["s3_uploaded"] = bool(result.get("s3_uploaded"))
+            result["encrypted"] = bool(result.get("encrypted"))
+        return result
 
 
 def delete_backup_record(backup_id: str) -> bool:
     """Delete a backup record."""
-    db = get_db()
-    DBQuery = Query()
-    removed = db.table("backups").remove(DBQuery.id == backup_id)
-    db.close()
-    return len(removed) > 0
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM backups WHERE id = ?", (backup_id,))
+        return cursor.rowcount > 0
 
 
 # =============================================================================
@@ -160,49 +298,74 @@ def delete_backup_record(backup_id: str) -> bool:
 
 def get_schedules() -> List[Dict[str, Any]]:
     """Get all schedules."""
-    db = get_db()
-    result = db.table("schedules").all()
-    db.close()
-    return result
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM schedules ORDER BY name")
+        results = cursor.fetchall()
+        for r in results:
+            r["enabled"] = bool(r.get("enabled", 1))
+        return results
 
 
 def get_schedule(schedule_id: str) -> Optional[Dict[str, Any]]:
     """Get a specific schedule."""
-    db = get_db()
-    DBQuery = Query()
-    result = db.table("schedules").get(DBQuery.id == schedule_id)
-    db.close()
-    return result
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM schedules WHERE id = ?", (schedule_id,))
+        result = cursor.fetchone()
+        if result:
+            result["enabled"] = bool(result.get("enabled", 1))
+        return result
 
 
 def create_schedule(data: Dict[str, Any]) -> Dict[str, Any]:
     """Create a new schedule."""
-    db = get_db()
-    data["created_at"] = datetime.utcnow().isoformat()
-    data["updated_at"] = datetime.utcnow().isoformat()
-    db.table("schedules").insert(data)
-    db.close()
-    return data
+    with get_db() as conn:
+        cursor = conn.cursor()
+        now = datetime.utcnow().isoformat()
+        data["created_at"] = now
+        data["updated_at"] = now
+
+        if "enabled" in data:
+            data["enabled"] = int(data["enabled"])
+
+        columns = ", ".join(data.keys())
+        placeholders = ", ".join(["?" for _ in data])
+        cursor.execute(
+            f"INSERT INTO schedules ({columns}) VALUES ({placeholders})",
+            list(data.values())
+        )
+        return data
 
 
 def update_schedule(schedule_id: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a schedule."""
-    db = get_db()
-    DBQuery = Query()
-    data["updated_at"] = datetime.utcnow().isoformat()
-    db.table("schedules").update(data, DBQuery.id == schedule_id)
-    result = db.table("schedules").get(DBQuery.id == schedule_id)
-    db.close()
-    return result
+    with get_db() as conn:
+        cursor = conn.cursor()
+        data["updated_at"] = datetime.utcnow().isoformat()
+
+        if "enabled" in data:
+            data["enabled"] = int(data["enabled"])
+
+        set_clause = ", ".join([f"{k} = ?" for k in data.keys()])
+        cursor.execute(
+            f"UPDATE schedules SET {set_clause} WHERE id = ?",
+            list(data.values()) + [schedule_id]
+        )
+
+        cursor.execute("SELECT * FROM schedules WHERE id = ?", (schedule_id,))
+        result = cursor.fetchone()
+        if result:
+            result["enabled"] = bool(result.get("enabled", 1))
+        return result
 
 
 def delete_schedule(schedule_id: str) -> bool:
     """Delete a schedule."""
-    db = get_db()
-    DBQuery = Query()
-    removed = db.table("schedules").remove(DBQuery.id == schedule_id)
-    db.close()
-    return len(removed) > 0
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
+        return cursor.rowcount > 0
 
 
 # =============================================================================
@@ -211,21 +374,42 @@ def delete_schedule(schedule_id: str) -> bool:
 
 def get_settings() -> Dict[str, Any]:
     """Get global settings."""
-    db = get_db()
-    settings = db.table("settings").all()
-    db.close()
-    return settings[0] if settings else {}
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM settings WHERE id = 'global'")
+        result = cursor.fetchone()
+        if result:
+            # Convert integer booleans
+            result["encryption_enabled"] = bool(result.get("encryption_enabled"))
+            result["s3_enabled"] = bool(result.get("s3_enabled"))
+            result["email_enabled"] = bool(result.get("email_enabled"))
+        return result or {}
 
 
 def update_settings(data: Dict[str, Any]) -> Dict[str, Any]:
     """Update global settings."""
-    db = get_db()
-    DBQuery = Query()
-    data["updated_at"] = datetime.utcnow().isoformat()
-    db.table("settings").update(data, DBQuery.id == "global")
-    result = db.table("settings").get(DBQuery.id == "global")
-    db.close()
-    return result
+    with get_db() as conn:
+        cursor = conn.cursor()
+        data["updated_at"] = datetime.utcnow().isoformat()
+
+        # Convert booleans to integers
+        for key in ["encryption_enabled", "s3_enabled", "email_enabled"]:
+            if key in data:
+                data[key] = int(data[key])
+
+        set_clause = ", ".join([f"{k} = ?" for k in data.keys()])
+        cursor.execute(
+            f"UPDATE settings SET {set_clause} WHERE id = 'global'",
+            list(data.values())
+        )
+
+        cursor.execute("SELECT * FROM settings WHERE id = 'global'")
+        result = cursor.fetchone()
+        if result:
+            result["encryption_enabled"] = bool(result.get("encryption_enabled"))
+            result["s3_enabled"] = bool(result.get("s3_enabled"))
+            result["email_enabled"] = bool(result.get("email_enabled"))
+        return result or {}
 
 
 # =============================================================================
@@ -234,46 +418,58 @@ def update_settings(data: Dict[str, Any]) -> Dict[str, Any]:
 
 def add_log(level: str, message: str, backup_id: Optional[str] = None, extra: Optional[Dict] = None):
     """Add a log entry."""
-    db = get_db()
-    db.table("logs").insert({
-        "timestamp": datetime.utcnow().isoformat(),
-        "level": level,
-        "message": message,
-        "backup_id": backup_id,
-        "extra": extra or {},
-    })
-    db.close()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO logs (timestamp, level, message, backup_id, extra) VALUES (?, ?, ?, ?, ?)",
+            (
+                datetime.utcnow().isoformat(),
+                level,
+                message,
+                backup_id,
+                json.dumps(extra) if extra else None
+            )
+        )
 
 
 def get_logs(limit: int = 200, level: Optional[str] = None, backup_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Get log entries."""
-    db = get_db()
-    table = db.table("logs")
+    with get_db() as conn:
+        cursor = conn.cursor()
 
-    if level and backup_id:
-        DBQuery = Query()
-        result = table.search((DBQuery.level == level) & (DBQuery.backup_id == backup_id))
-    elif level:
-        DBQuery = Query()
-        result = table.search(DBQuery.level == level)
-    elif backup_id:
-        DBQuery = Query()
-        result = table.search(DBQuery.backup_id == backup_id)
-    else:
-        result = table.all()
+        query = "SELECT * FROM logs WHERE 1=1"
+        params = []
 
-    # Sort by timestamp descending
-    result = sorted(result, key=lambda x: x.get("timestamp", ""), reverse=True)
-    db.close()
-    return result[:limit]
+        if level:
+            query += " AND level = ?"
+            params.append(level)
+        if backup_id:
+            query += " AND backup_id = ?"
+            params.append(backup_id)
+
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+
+        # Parse extra JSON
+        for r in results:
+            if r.get("extra"):
+                try:
+                    r["extra"] = json.loads(r["extra"])
+                except json.JSONDecodeError:
+                    r["extra"] = {}
+            else:
+                r["extra"] = {}
+
+        return results
 
 
 def clear_old_logs(days: int = 30):
     """Clear logs older than specified days."""
-    from datetime import timedelta
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
 
-    db = get_db()
-    DBQuery = Query()
-    db.table("logs").remove(DBQuery.timestamp < cutoff)
-    db.close()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM logs WHERE timestamp < ?", (cutoff,))

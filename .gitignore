@@ -4,6 +4,9 @@
 # Data directories - contain server state, don't commit
 data/
 backups/
+*.db
+*.db-wal
+*.db-shm
 
 # Node
 node_modules/

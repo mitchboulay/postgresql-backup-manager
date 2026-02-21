@@ -160,8 +160,8 @@ class BackupService:
         ]
 
         # Add schema filter if specified
-        if db_config.get("schema"):
-            cmd.extend(["-n", db_config["schema"]])
+        if db_config.get("schema_name"):
+            cmd.extend(["-n", db_config["schema_name"]])
 
         result = subprocess.run(
             cmd,

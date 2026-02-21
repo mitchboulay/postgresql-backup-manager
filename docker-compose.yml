@@ -11,7 +11,7 @@ services:
       - ./data:/data
       - ./backups:/backups
     environment:
-      - DB_PATH=/data/backup_manager.json
+      - DB_PATH=/data/backup_manager.db
       - BACKUP_PATH=/backups
     logging:
       driver: json-file
