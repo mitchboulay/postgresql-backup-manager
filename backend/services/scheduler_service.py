@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 from db import database
+from db.database import utc_now
 
 
 class SchedulerService:
@@ -78,13 +79,13 @@ class SchedulerService:
 
             # Update last run time
             database.update_schedule(schedule_id, {
-                "last_run": datetime.utcnow().isoformat(),
+                "last_run": utc_now(),
                 "last_status": "success",
             })
 
         except Exception as e:
             database.update_schedule(schedule_id, {
-                "last_run": datetime.utcnow().isoformat(),
+                "last_run": utc_now(),
                 "last_status": "failed",
                 "last_error": str(e),
             })

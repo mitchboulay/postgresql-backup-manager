@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Dict, Any
 
 from db import database
+from db.database import utc_now
 
 router = APIRouter()
 
@@ -31,7 +32,7 @@ async def health_check(request: Request) -> Dict[str, Any]:
 
     return {
         "status": health_status,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": utc_now(),
         "databases_configured": len(databases),
         "schedules_active": len([s for s in schedules if s.get("enabled", True)]),
         "jobs_scheduled": len(jobs),
@@ -76,8 +77,30 @@ async def detailed_health(request: Request) -> Dict[str, Any]:
         "total_size": sum(b.get("file_size", 0) for b in all_backups if b.get("status") == "completed"),
     }
 
+    # Check S3 connectivity if enabled
+    s3_status = None
+    if basic.get("s3_enabled"):
+        try:
+            from services.s3_service import S3Service
+            s3_service = S3Service(settings)
+            test_result = s3_service.test_connection()
+            s3_status = {
+                "connected": test_result.get("success", False),
+                "bucket": settings.get("s3_bucket"),
+                "prefix": settings.get("s3_prefix", ""),
+                "error": test_result.get("error") if not test_result.get("success") else None,
+            }
+        except Exception as e:
+            s3_status = {"connected": False, "error": str(e)}
+
+    # Count local backup files
+    from pathlib import Path
+    backup_files = list(Path(backup_path).glob("*.dump*")) if Path(backup_path).exists() else []
+
     return {
         **basic,
         "disk": disk_info,
         "backup_stats": stats,
+        "s3_status": s3_status,
+        "local_backup_files": len(backup_files),
     }

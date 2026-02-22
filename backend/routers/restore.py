@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime
 
 from db import database
+from db.database import utc_now
 from services.s3_service import S3Service
 from services.restore_service import RestoreService
 
@@ -42,7 +43,8 @@ def list_s3_backups():
         raise HTTPException(status_code=400, detail="S3 is not configured")
 
     s3_service = S3Service(settings)
-    backups = s3_service.list_backups()
+    prefix = settings.get("s3_prefix", "")
+    backups = s3_service.list_backups(prefix=prefix)
 
     return {
         "backups": backups,
@@ -69,7 +71,7 @@ def _run_restore(job_id: str, s3_key: str, target_db: dict, is_encrypted: bool, 
     except Exception as e:
         _restore_jobs[job_id]["status"] = "failed"
         _restore_jobs[job_id]["error"] = str(e)
-        _restore_jobs[job_id]["completed_at"] = datetime.utcnow().isoformat()
+        _restore_jobs[job_id]["completed_at"] = utc_now()
 
 
 @router.post("/from-s3")
@@ -95,7 +97,7 @@ def restore_from_s3(request: RestoreRequest, background_tasks: BackgroundTasks):
         "id": job_id,
         "status": "running",
         "s3_key": request.s3_key,
-        "started_at": datetime.utcnow().isoformat(),
+        "started_at": utc_now(),
     }
 
     # Run in background

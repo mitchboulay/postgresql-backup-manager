@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any, List
 from pathlib import Path
 
 from db import database
+from db.database import utc_now
 from services.encryption_service import EncryptionService
 from services.s3_service import S3Service
 from services.email_service import EmailService
@@ -52,15 +53,13 @@ class BackupService:
             "database_id": db_id,
             "database_name": db_name,
             "status": "running",
-            "started_at": timestamp.isoformat(),
+            "started_at": utc_now(),
             "completed_at": None,
-            "file_path": None,
+            "file_name": None,
             "file_size": None,
             "encrypted": False,
-            "uploaded_to_s3": False,
-            "s3_path": None,
+            "s3_uploaded": False,
             "error": None,
-            "manual": manual,
         }
         database.create_backup_record(backup_record)
         database.add_log("info", f"Starting backup for {db_name}", backup_id)
@@ -91,27 +90,27 @@ class BackupService:
 
             # Get file size
             file_size = final_file.stat().st_size
-            backup_record["file_path"] = str(final_file)
+            backup_record["file_name"] = final_file.name
             backup_record["file_size"] = file_size
 
             # Upload to S3 if enabled
             if self.settings.get("s3_enabled"):
                 database.add_log("info", "Uploading to S3", backup_id)
-                s3_service = S3Service(
-                    bucket=self.settings["s3_bucket"],
-                    region=self.settings.get("s3_region", "us-east-1"),
-                    access_key=self.settings["s3_access_key"],
-                    secret_key=self.settings["s3_secret_key"],
-                )
-                s3_key = f"{self.settings.get('s3_prefix', '')}{final_file.name}"
-                s3_service.upload_file(final_file, s3_key)
-                backup_record["uploaded_to_s3"] = True
-                backup_record["s3_path"] = s3_key
-                database.add_log("info", f"Uploaded to S3: {s3_key}", backup_id)
+                try:
+                    s3_service = S3Service(self.settings)
+                    s3_key = f"{self.settings.get('s3_prefix', '')}{final_file.name}"
+                    result = s3_service.upload_file(final_file, s3_key)
+                    if result.get("success"):
+                        backup_record["s3_uploaded"] = True
+                        database.add_log("info", f"Uploaded to S3: {s3_key}", backup_id)
+                    else:
+                        database.add_log("error", f"S3 upload failed: {result.get('error')}", backup_id)
+                except Exception as s3_error:
+                    database.add_log("error", f"S3 upload exception: {str(s3_error)}", backup_id)
 
             # Update record as success
             backup_record["status"] = "completed"
-            backup_record["completed_at"] = datetime.utcnow().isoformat()
+            backup_record["completed_at"] = utc_now()
             database.update_backup_record(backup_id, backup_record)
             database.add_log("info", f"Backup completed: {final_file.name} ({self._format_size(file_size)})", backup_id)
 
@@ -124,7 +123,7 @@ class BackupService:
             error_msg = str(e)
             backup_record["status"] = "failed"
             backup_record["error"] = error_msg
-            backup_record["completed_at"] = datetime.utcnow().isoformat()
+            backup_record["completed_at"] = utc_now()
             database.update_backup_record(backup_id, backup_record)
             database.add_log("error", f"Backup failed: {error_msg}", backup_id)
 

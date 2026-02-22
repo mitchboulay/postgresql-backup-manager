@@ -96,12 +96,11 @@ export default function Backups() {
                           <Lock className="h-3 w-3" /> Encrypted
                         </span>
                       )}
-                      {backup.uploaded_to_s3 && (
+                      {backup.s3_uploaded && (
                         <span className="flex items-center gap-1 text-purple-600">
                           <Cloud className="h-3 w-3" /> S3
                         </span>
                       )}
-                      {backup.manual && <span className="text-orange-600">Manual</span>}
                     </div>
                     {backup.error && (
                       <p className="text-sm text-red-600 mt-1">{backup.error}</p>

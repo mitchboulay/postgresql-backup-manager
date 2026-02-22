@@ -5,9 +5,14 @@ Thread-safe with built-in concurrency handling.
 import os
 import sqlite3
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
+
+
+def utc_now() -> str:
+    """Return current UTC time as ISO string with Z suffix for proper JS parsing."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 # Database path
 DB_PATH = os.getenv("DB_PATH", "/data/backup_manager.db")
@@ -142,7 +147,7 @@ def init_db():
         # Initialize default settings if not exist
         cursor.execute("SELECT id FROM settings WHERE id = 'global'")
         if not cursor.fetchone():
-            now = datetime.utcnow().isoformat()
+            now = utc_now()
             cursor.execute("""
                 INSERT INTO settings (id, created_at, updated_at)
                 VALUES ('global', ?, ?)
@@ -173,7 +178,7 @@ def create_database(data: Dict[str, Any]) -> Dict[str, Any]:
     """Create a new database configuration."""
     with get_db() as conn:
         cursor = conn.cursor()
-        now = datetime.utcnow().isoformat()
+        now = utc_now()
         data["created_at"] = now
         data["updated_at"] = now
 
@@ -190,7 +195,7 @@ def update_database(db_id: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]
     """Update a database configuration."""
     with get_db() as conn:
         cursor = conn.cursor()
-        data["updated_at"] = datetime.utcnow().isoformat()
+        data["updated_at"] = utc_now()
 
         set_clause = ", ".join([f"{k} = ?" for k in data.keys()])
         cursor.execute(
@@ -242,7 +247,7 @@ def create_backup_record(data: Dict[str, Any]) -> Dict[str, Any]:
     """Create a new backup record."""
     with get_db() as conn:
         cursor = conn.cursor()
-        data["created_at"] = datetime.utcnow().isoformat()
+        data["created_at"] = utc_now()
 
         # Convert booleans to integers for SQLite
         if "s3_uploaded" in data:
@@ -322,7 +327,7 @@ def create_schedule(data: Dict[str, Any]) -> Dict[str, Any]:
     """Create a new schedule."""
     with get_db() as conn:
         cursor = conn.cursor()
-        now = datetime.utcnow().isoformat()
+        now = utc_now()
         data["created_at"] = now
         data["updated_at"] = now
 
@@ -342,7 +347,7 @@ def update_schedule(schedule_id: str, data: Dict[str, Any]) -> Optional[Dict[str
     """Update a schedule."""
     with get_db() as conn:
         cursor = conn.cursor()
-        data["updated_at"] = datetime.utcnow().isoformat()
+        data["updated_at"] = utc_now()
 
         if "enabled" in data:
             data["enabled"] = int(data["enabled"])
@@ -390,7 +395,7 @@ def update_settings(data: Dict[str, Any]) -> Dict[str, Any]:
     """Update global settings."""
     with get_db() as conn:
         cursor = conn.cursor()
-        data["updated_at"] = datetime.utcnow().isoformat()
+        data["updated_at"] = utc_now()
 
         # Convert booleans to integers
         for key in ["encryption_enabled", "s3_enabled", "email_enabled"]:
@@ -423,7 +428,7 @@ def add_log(level: str, message: str, backup_id: Optional[str] = None, extra: Op
         cursor.execute(
             "INSERT INTO logs (timestamp, level, message, backup_id, extra) VALUES (?, ?, ?, ?, ?)",
             (
-                datetime.utcnow().isoformat(),
+                utc_now(),
                 level,
                 message,
                 backup_id,

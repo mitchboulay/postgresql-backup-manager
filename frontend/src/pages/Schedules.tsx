@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getSchedules, getDatabases, createSchedule, deleteSchedule, runScheduleNow, pauseSchedule, resumeSchedule, getCronPresets, validateCron } from '../lib/api'
+import { getSchedules, getDatabases, createSchedule, deleteSchedule, runScheduleNow, pauseSchedule, resumeSchedule, getCronPresets, validateCron, getSchedulerJobs } from '../lib/api'
 import { Plus, Trash2, Play, Pause, PlayCircle } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 
@@ -38,6 +38,18 @@ export default function Schedules() {
     queryKey: ['cron-presets'],
     queryFn: getCronPresets,
   })
+
+  const { data: schedulerJobs } = useQuery({
+    queryKey: ['scheduler-jobs'],
+    queryFn: getSchedulerJobs,
+    refetchInterval: 10000, // Refresh every 10 seconds
+  })
+
+  // Map job next_run times to schedules
+  const jobsMap = schedulerJobs?.reduce((acc: any, job: any) => {
+    acc[job.id] = job
+    return acc
+  }, {}) || {}
 
   const createMutation = useMutation({
     mutationFn: createSchedule,
@@ -216,6 +228,11 @@ export default function Schedules() {
                   <p className="text-sm text-gray-500">
                     {schedule.database_name} • <code className="bg-gray-100 px-1 rounded">{schedule.cron_expression}</code>
                   </p>
+                  {jobsMap[schedule.id]?.next_run && (
+                    <p className="text-sm text-blue-600">
+                      Next run: {formatDistanceToNow(new Date(jobsMap[schedule.id].next_run), { addSuffix: true })}
+                    </p>
+                  )}
                   {schedule.last_run && (
                     <p className="text-sm text-gray-400">
                       Last run: {formatDistanceToNow(new Date(schedule.last_run), { addSuffix: true })}
@@ -225,6 +242,9 @@ export default function Schedules() {
                         </span>
                       )}
                     </p>
+                  )}
+                  {!jobsMap[schedule.id] && schedule.enabled && (
+                    <p className="text-sm text-yellow-600">Not loaded in scheduler</p>
                   )}
                 </div>
                 <div className="flex items-center gap-2">

@@ -34,6 +34,7 @@ export const uploadToS3 = (filename: string) => api.post(`/backups/files/${filen
 // Schedules
 export const getSchedules = () => api.get('/schedules').then(r => r.data)
 export const getSchedule = (id: string) => api.get(`/schedules/${id}`).then(r => r.data)
+export const getSchedulerJobs = () => api.get('/schedules/jobs').then(r => r.data)
 export const createSchedule = (data: any) => api.post('/schedules', data).then(r => r.data)
 export const updateSchedule = (id: string, data: any) => api.put(`/schedules/${id}`, data).then(r => r.data)
 export const deleteSchedule = (id: string) => api.delete(`/schedules/${id}`).then(r => r.data)
