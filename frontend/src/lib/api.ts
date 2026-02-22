@@ -25,7 +25,11 @@ export const testNewDatabase = (data: any) => api.post('/config/databases/test',
 // Backups
 export const getBackups = (limit = 100) => api.get(`/backups?limit=${limit}`).then(r => r.data)
 export const getBackupFiles = () => api.get('/backups/files').then(r => r.data)
-export const runBackup = (dbId: string) => api.post(`/backups/run/${dbId}`).then(r => r.data)
+export const runBackup = (dbId: string, options?: { customName?: string; localOnly?: boolean }) =>
+  api.post(`/backups/run/${dbId}`, {
+    custom_name: options?.customName,
+    local_only: options?.localOnly ?? false,
+  }).then(r => r.data)
 export const runBackupSync = (dbId: string) => api.post(`/backups/run/${dbId}/sync`).then(r => r.data)
 export const deleteBackup = (id: string) => api.delete(`/backups/${id}`).then(r => r.data)
 export const deleteBackupFile = (filename: string) => api.delete(`/backups/files/${filename}`).then(r => r.data)

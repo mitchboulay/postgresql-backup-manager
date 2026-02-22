@@ -28,13 +28,15 @@ class BackupService:
         self.settings = database.get_settings()
         self.backup_path = Path(self.settings.get("backup_path", "/backups"))
 
-    def run_backup(self, db_config: Dict[str, Any], manual: bool = False) -> Dict[str, Any]:
+    def run_backup(self, db_config: Dict[str, Any], manual: bool = False, custom_name: Optional[str] = None, local_only: bool = False) -> Dict[str, Any]:
         """
         Run a backup for the specified database.
 
         Args:
             db_config: Database configuration dict
             manual: Whether this is a manual trigger
+            custom_name: Optional custom name for the backup file
+            local_only: If True, skip S3 upload even if S3 is configured
 
         Returns:
             Backup result dict
@@ -65,8 +67,13 @@ class BackupService:
         database.add_log("info", f"Starting backup for {db_name}", backup_id)
 
         try:
-            # Build file paths
-            base_filename = f"{db_name}_{timestamp_str}"
+            # Build file paths - use custom name if provided
+            if custom_name:
+                # Sanitize custom name (remove unsafe characters)
+                safe_name = "".join(c for c in custom_name if c.isalnum() or c in "-_")
+                base_filename = f"{safe_name}_{timestamp_str}"
+            else:
+                base_filename = f"{db_name}_{timestamp_str}"
             dump_file = self.backup_path / f"{base_filename}.dump"
             final_file = dump_file
 
@@ -93,8 +100,8 @@ class BackupService:
             backup_record["file_name"] = final_file.name
             backup_record["file_size"] = file_size
 
-            # Upload to S3 if enabled
-            if self.settings.get("s3_enabled"):
+            # Upload to S3 if enabled and not local_only
+            if self.settings.get("s3_enabled") and not local_only:
                 database.add_log("info", "Uploading to S3", backup_id)
                 try:
                     s3_service = S3Service(self.settings)
@@ -107,6 +114,8 @@ class BackupService:
                         database.add_log("error", f"S3 upload failed: {result.get('error')}", backup_id)
                 except Exception as s3_error:
                     database.add_log("error", f"S3 upload exception: {str(s3_error)}", backup_id)
+            elif local_only:
+                database.add_log("info", "Skipping S3 upload (local only)", backup_id)
 
             # Update record as success
             backup_record["status"] = "completed"

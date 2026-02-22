@@ -3,6 +3,7 @@ Backup management endpoints.
 """
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
@@ -12,6 +13,11 @@ from services.encryption_service import EncryptionService
 from services.s3_service import S3Service
 
 router = APIRouter()
+
+
+class BackupRequest(BaseModel):
+    custom_name: Optional[str] = None
+    local_only: bool = False
 
 
 @router.get("")
@@ -43,19 +49,23 @@ async def get_backup(backup_id: str) -> Dict[str, Any]:
 @router.post("/run/{database_id}")
 async def run_backup(
     database_id: str,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    request: Optional[BackupRequest] = None
 ) -> Dict[str, Any]:
     """Trigger a manual backup for a database."""
     db_config = database.get_database(database_id)
     if not db_config:
         raise HTTPException(status_code=404, detail="Database not found")
 
+    custom_name = request.custom_name if request else None
+    local_only = request.local_only if request else False
+
     # Run backup in background
     backup_service = get_backup_service()
 
     def run():
         try:
-            backup_service.run_backup(db_config, manual=True)
+            backup_service.run_backup(db_config, manual=True, custom_name=custom_name, local_only=local_only)
         except Exception as e:
             database.add_log("error", f"Manual backup failed: {str(e)}")
 
@@ -64,21 +74,28 @@ async def run_backup(
     return {
         "status": "started",
         "database_id": database_id,
+        "custom_name": custom_name,
+        "local_only": local_only,
         "message": "Backup started in background",
     }
 
 
 @router.post("/run/{database_id}/sync")
-async def run_backup_sync(database_id: str) -> Dict[str, Any]:
+async def run_backup_sync(
+    database_id: str,
+    request: Optional[BackupRequest] = None
+) -> Dict[str, Any]:
     """Run a backup synchronously (waits for completion)."""
     db_config = database.get_database(database_id)
     if not db_config:
         raise HTTPException(status_code=404, detail="Database not found")
 
+    custom_name = request.custom_name if request else None
+    local_only = request.local_only if request else False
     backup_service = get_backup_service()
 
     try:
-        result = backup_service.run_backup(db_config, manual=True)
+        result = backup_service.run_backup(db_config, manual=True, custom_name=custom_name, local_only=local_only)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

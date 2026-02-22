@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getDatabases, createDatabase, updateDatabase, deleteDatabase, testDatabase, testNewDatabase, runBackup } from '../lib/api'
-import { Plus, Trash2, Play, CheckCircle, XCircle, Loader2, Pencil } from 'lucide-react'
+import { Plus, Trash2, Play, CheckCircle, XCircle, Loader2, Pencil, X } from 'lucide-react'
 
 interface DatabaseForm {
   name: string
@@ -34,6 +34,11 @@ export default function Databases() {
   const [form, setForm] = useState<DatabaseForm>(defaultForm)
   const [testResult, setTestResult] = useState<any>(null)
   const [testingId, setTestingId] = useState<string | null>(null)
+
+  // Backup dialog state
+  const [backupDialog, setBackupDialog] = useState<{ open: boolean; dbId: string; dbName: string } | null>(null)
+  const [backupName, setBackupName] = useState('')
+  const [localOnly, setLocalOnly] = useState(false)
 
   const { data: databases, isLoading } = useQuery({
     queryKey: ['databases'],
@@ -70,11 +75,31 @@ export default function Databases() {
   })
 
   const backupMutation = useMutation({
-    mutationFn: runBackup,
+    mutationFn: ({ dbId, customName, localOnly }: { dbId: string; customName?: string; localOnly?: boolean }) =>
+      runBackup(dbId, { customName, localOnly }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backups'] })
+      setBackupDialog(null)
+      setBackupName('')
+      setLocalOnly(false)
     },
   })
+
+  const handleBackupClick = (db: any) => {
+    setBackupDialog({ open: true, dbId: db.id, dbName: db.name })
+    setBackupName('')
+    setLocalOnly(false)
+  }
+
+  const handleRunBackup = () => {
+    if (backupDialog) {
+      backupMutation.mutate({
+        dbId: backupDialog.dbId,
+        customName: backupName.trim() || undefined,
+        localOnly,
+      })
+    }
+  }
 
   const handleTest = async () => {
     setTestResult(null)
@@ -357,7 +382,7 @@ export default function Databases() {
                     {testingId === db.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
                   </button>
                   <button
-                    onClick={() => backupMutation.mutate(db.id)}
+                    onClick={() => handleBackupClick(db)}
                     disabled={backupMutation.isPending}
                     className="p-2 text-gray-500 hover:text-green-600 hover:bg-green-50 rounded"
                     title="Run Backup"
@@ -381,6 +406,109 @@ export default function Databases() {
           )}
         </div>
       </div>
+
+      {/* Backup Name Dialog */}
+      {backupDialog?.open && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+            <div className="flex items-center justify-between p-4 border-b">
+              <h3 className="text-lg font-semibold">Run Backup</h3>
+              <button
+                onClick={() => {
+                  setBackupDialog(null)
+                  setBackupName('')
+                  setLocalOnly(false)
+                }}
+                className="p-1 hover:bg-gray-100 rounded"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              <p className="text-sm text-gray-600">
+                Running backup for <span className="font-medium">{backupDialog.dbName}</span>
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Backup Name <span className="text-gray-400 font-normal">(optional)</span>
+                </label>
+                <input
+                  type="text"
+                  value={backupName}
+                  onChange={(e) => setBackupName(e.target.value)}
+                  placeholder={`${backupDialog.dbName}_YYYYMMDD_HHMMSS`}
+                  className="w-full border rounded-lg px-3 py-2"
+                  autoFocus
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Leave blank to use the default naming format
+                </p>
+              </div>
+              <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                <div>
+                  <p className="text-sm font-medium text-gray-700">Storage</p>
+                  <p className="text-xs text-gray-500">
+                    {localOnly ? 'Save to local disk only' : 'Save locally and upload to S3'}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setLocalOnly(false)}
+                    className={`px-3 py-1.5 text-sm rounded-l-lg border ${
+                      !localOnly
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    Local + S3
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLocalOnly(true)}
+                    className={`px-3 py-1.5 text-sm rounded-r-lg border-t border-r border-b ${
+                      localOnly
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    Local Only
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 p-4 border-t bg-gray-50 rounded-b-lg">
+              <button
+                onClick={() => {
+                  setBackupDialog(null)
+                  setBackupName('')
+                  setLocalOnly(false)
+                }}
+                className="px-4 py-2 text-gray-600 hover:text-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRunBackup}
+                disabled={backupMutation.isPending}
+                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
+              >
+                {backupMutation.isPending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Starting...
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-4 w-4" />
+                    Run Backup
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
