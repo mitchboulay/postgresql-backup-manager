@@ -59,10 +59,17 @@ def init_db():
                 password TEXT NOT NULL,
                 schema_name TEXT,
                 ssl_mode TEXT DEFAULT 'require',
+                environment TEXT DEFAULT 'dev',
                 created_at TEXT,
                 updated_at TEXT
             )
         """)
+
+        # Add environment column if it doesn't exist (migration for existing DBs)
+        try:
+            cursor.execute("ALTER TABLE databases ADD COLUMN environment TEXT DEFAULT 'dev'")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
         # Backups table
         cursor.execute("""

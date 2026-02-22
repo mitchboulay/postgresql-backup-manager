@@ -28,6 +28,7 @@ class DatabaseConfig(BaseModel):
     password: str
     schema_name: Optional[str] = None
     ssl_mode: str = "require"
+    environment: str = "dev"  # 'prod' or 'dev'
 
 
 class DatabaseUpdate(BaseModel):
@@ -39,6 +40,7 @@ class DatabaseUpdate(BaseModel):
     password: Optional[str] = None
     schema_name: Optional[str] = None
     ssl_mode: Optional[str] = None
+    environment: Optional[str] = None
 
 
 class SettingsUpdate(BaseModel):

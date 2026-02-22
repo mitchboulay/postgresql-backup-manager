@@ -60,7 +60,7 @@ export const getS3BackupsForRestore = () => api.get('/restore/s3-backups').then(
 export const getTargetDatabases = () => api.get('/restore/databases').then(r => r.data)
 export const restoreFromS3 = (data: {
   s3_key: string
-  target_db: {
+  target_db?: {
     host: string
     port: number
     database: string
@@ -68,7 +68,10 @@ export const restoreFromS3 = (data: {
     password: string
     ssl_mode?: string
   }
+  target_database_id?: string  // Use stored credentials (for dev->dev, prod->dev)
   is_encrypted: boolean
+  source_database_id?: string
+  confirm_prod_restore?: boolean
 }) => api.post('/restore/from-s3', data).then(r => r.data)
 export const getRestoreStatus = (jobId: string) => api.get(`/restore/status/${jobId}`).then(r => r.data)
 

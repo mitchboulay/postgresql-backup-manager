@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getDatabases, createDatabase, deleteDatabase, testDatabase, testNewDatabase, runBackup } from '../lib/api'
-import { Plus, Trash2, Play, CheckCircle, XCircle, Loader2 } from 'lucide-react'
+import { getDatabases, createDatabase, updateDatabase, deleteDatabase, testDatabase, testNewDatabase, runBackup } from '../lib/api'
+import { Plus, Trash2, Play, CheckCircle, XCircle, Loader2, Pencil } from 'lucide-react'
 
 interface DatabaseForm {
   name: string
@@ -12,6 +12,7 @@ interface DatabaseForm {
   password: string
   schema_name: string
   ssl_mode: string
+  environment: 'prod' | 'dev'
 }
 
 const defaultForm: DatabaseForm = {
@@ -23,11 +24,13 @@ const defaultForm: DatabaseForm = {
   password: '',
   schema_name: '',
   ssl_mode: 'require',
+  environment: 'dev',
 }
 
 export default function Databases() {
   const queryClient = useQueryClient()
   const [showForm, setShowForm] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState<DatabaseForm>(defaultForm)
   const [testResult, setTestResult] = useState<any>(null)
   const [testingId, setTestingId] = useState<string | null>(null)
@@ -42,6 +45,18 @@ export default function Databases() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['databases'] })
       setShowForm(false)
+      setEditingId(null)
+      setForm(defaultForm)
+      setTestResult(null)
+    },
+  })
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Partial<DatabaseForm> }) => updateDatabase(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['databases'] })
+      setShowForm(false)
+      setEditingId(null)
       setForm(defaultForm)
       setTestResult(null)
     },
@@ -82,9 +97,42 @@ export default function Databases() {
     setTestingId(null)
   }
 
+  const handleEdit = (db: any) => {
+    setEditingId(db.id)
+    setForm({
+      name: db.name,
+      host: db.host,
+      port: db.port,
+      database: db.database,
+      username: db.username,
+      password: '', // Don't prefill password for security
+      schema_name: db.schema_name || '',
+      ssl_mode: db.ssl_mode || 'require',
+      environment: db.environment || 'dev',
+    })
+    setShowForm(true)
+    setTestResult(null)
+  }
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    createMutation.mutate(form)
+    if (editingId) {
+      // For updates, only send fields that have values (don't send empty password)
+      const updateData: Partial<DatabaseForm> = { ...form }
+      if (!updateData.password) {
+        delete updateData.password
+      }
+      updateMutation.mutate({ id: editingId, data: updateData })
+    } else {
+      createMutation.mutate(form)
+    }
+  }
+
+  const handleCancel = () => {
+    setShowForm(false)
+    setEditingId(null)
+    setForm(defaultForm)
+    setTestResult(null)
   }
 
   if (isLoading) {
@@ -96,7 +144,12 @@ export default function Databases() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gray-900">Databases</h1>
         <button
-          onClick={() => setShowForm(true)}
+          onClick={() => {
+            setEditingId(null)
+            setForm(defaultForm)
+            setTestResult(null)
+            setShowForm(true)
+          }}
           className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"
         >
           <Plus className="h-4 w-4" />
@@ -104,10 +157,12 @@ export default function Databases() {
         </button>
       </div>
 
-      {/* Add Database Form */}
+      {/* Add/Edit Database Form */}
       {showForm && (
         <div className="bg-white rounded-lg border p-6">
-          <h2 className="text-lg font-semibold mb-4">Add New Database</h2>
+          <h2 className="text-lg font-semibold mb-4">
+            {editingId ? 'Edit Database' : 'Add New Database'}
+          </h2>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -162,13 +217,16 @@ export default function Databases() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Password {editingId && <span className="text-gray-400 font-normal">(leave blank to keep current)</span>}
+                </label>
                 <input
                   type="password"
                   value={form.password}
                   onChange={(e) => setForm({ ...form, password: e.target.value })}
                   className="w-full border rounded-lg px-3 py-2"
-                  required
+                  required={!editingId}
+                  placeholder={editingId ? '••••••••' : ''}
                 />
               </div>
               <div>
@@ -192,6 +250,20 @@ export default function Databases() {
                   <option value="prefer">Prefer</option>
                   <option value="disable">Disable</option>
                 </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Environment</label>
+                <select
+                  value={form.environment}
+                  onChange={(e) => setForm({ ...form, environment: e.target.value as 'prod' | 'dev' })}
+                  className="w-full border rounded-lg px-3 py-2"
+                >
+                  <option value="dev">Development</option>
+                  <option value="prod">Production</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  Production databases have extra restore protections
+                </p>
               </div>
             </div>
 
@@ -221,18 +293,18 @@ export default function Databases() {
               </button>
               <button
                 type="submit"
-                disabled={createMutation.isPending}
+                disabled={createMutation.isPending || updateMutation.isPending}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
               >
-                {createMutation.isPending ? 'Saving...' : 'Save Database'}
+                {(createMutation.isPending || updateMutation.isPending)
+                  ? 'Saving...'
+                  : editingId
+                    ? 'Update Database'
+                    : 'Save Database'}
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setShowForm(false)
-                  setForm(defaultForm)
-                  setTestResult(null)
-                }}
+                onClick={handleCancel}
                 className="px-4 py-2 text-gray-600 hover:text-gray-800"
               >
                 Cancel
@@ -253,13 +325,29 @@ export default function Databases() {
             databases?.map((db: any) => (
               <div key={db.id} className="p-4 flex items-center justify-between">
                 <div>
-                  <p className="font-medium">{db.name}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium">{db.name}</p>
+                    <span className={`text-xs px-2 py-0.5 rounded ${
+                      db.environment === 'prod'
+                        ? 'bg-red-100 text-red-700'
+                        : 'bg-green-100 text-green-700'
+                    }`}>
+                      {db.environment === 'prod' ? 'Production' : 'Development'}
+                    </span>
+                  </div>
                   <p className="text-sm text-gray-500">
                     {db.host}:{db.port}/{db.database}
                     {db.schema && <span className="ml-2">({db.schema})</span>}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleEdit(db)}
+                    className="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded"
+                    title="Edit"
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </button>
                   <button
                     onClick={() => handleTestExisting(db.id)}
                     disabled={testingId === db.id}

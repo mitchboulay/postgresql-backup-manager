@@ -1,8 +1,11 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { getS3BackupsForRestore, getDatabases, restoreFromS3, getRestoreStatus } from '../lib/api'
-import { Download, Database, AlertTriangle, CheckCircle, Loader2 } from 'lucide-react'
+import { Download, Database, AlertTriangle, CheckCircle, Loader2, Search } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
+
+type SortOption = 'newest' | 'oldest' | 'largest' | 'smallest' | 'name'
+type FilterOption = 'all' | 'encrypted' | 'unencrypted'
 
 export default function RestorePage() {
   const [selectedBackup, setSelectedBackup] = useState<any>(null)
@@ -18,6 +21,13 @@ export default function RestorePage() {
   })
   const [restoreResult, setRestoreResult] = useState<any>(null)
   const [isPolling, setIsPolling] = useState(false)
+  const [confirmProdRestore, setConfirmProdRestore] = useState(false)
+  const [sourceDbId, setSourceDbId] = useState('')
+
+  // Search and filter state
+  const [searchQuery, setSearchQuery] = useState('')
+  const [sortBy, setSortBy] = useState<SortOption>('newest')
+  const [filterBy, setFilterBy] = useState<FilterOption>('all')
 
   const { data: s3Backups, isLoading: loadingBackups } = useQuery({
     queryKey: ['s3-backups-restore'],
@@ -28,6 +38,48 @@ export default function RestorePage() {
     queryKey: ['databases'],
     queryFn: getDatabases,
   })
+
+  // Filter and sort backups
+  const filteredBackups = useMemo(() => {
+    if (!s3Backups?.backups) return []
+
+    let result = [...s3Backups.backups]
+
+    // Apply search filter
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase()
+      result = result.filter((backup: any) =>
+        backup.key.toLowerCase().includes(query)
+      )
+    }
+
+    // Apply type filter
+    if (filterBy === 'encrypted') {
+      result = result.filter((backup: any) => backup.key.endsWith('.enc'))
+    } else if (filterBy === 'unencrypted') {
+      result = result.filter((backup: any) => !backup.key.endsWith('.enc'))
+    }
+
+    // Apply sorting
+    result.sort((a: any, b: any) => {
+      switch (sortBy) {
+        case 'newest':
+          return new Date(b.last_modified).getTime() - new Date(a.last_modified).getTime()
+        case 'oldest':
+          return new Date(a.last_modified).getTime() - new Date(b.last_modified).getTime()
+        case 'largest':
+          return b.size - a.size
+        case 'smallest':
+          return a.size - b.size
+        case 'name':
+          return a.key.localeCompare(b.key)
+        default:
+          return 0
+      }
+    })
+
+    return result
+  }, [s3Backups?.backups, searchQuery, sortBy, filterBy])
 
   const pollForStatus = async (jobId: string) => {
     setIsPolling(true)
@@ -79,39 +131,120 @@ export default function RestorePage() {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
   }
 
+  // Get environment info for validation
+  const getSourceEnv = () => {
+    if (!sourceDbId) return 'unknown'
+    const db = databases?.find((d: any) => d.id === sourceDbId)
+    return db?.environment || 'unknown'
+  }
+
+  const getTargetEnv = () => {
+    if (targetType === 'existing' && selectedDbId) {
+      const db = databases?.find((d: any) => d.id === selectedDbId)
+      return db?.environment || 'unknown'
+    }
+    return 'unknown'
+  }
+
+  const getRestoreWarning = () => {
+    const sourceEnv = getSourceEnv()
+    const targetEnv = getTargetEnv()
+
+    // Block dev -> prod entirely
+    if (sourceEnv === 'dev' && targetEnv === 'prod') {
+      return {
+        type: 'error',
+        message: 'Cannot restore dev backup to production. This would overwrite production data with test data.',
+      }
+    }
+
+    // Any other restore to prod requires confirmation + manual credentials
+    if (targetEnv === 'prod') {
+      return {
+        type: 'warning',
+        message: 'You are restoring to a production database. You must enter credentials manually and confirm this action.',
+      }
+    }
+
+    // Restores to dev are allowed without extra steps
+    return null
+  }
+
+  // Check if we need manual credentials (any restore to prod)
+  const requiresManualCredentials = () => {
+    const targetEnv = getTargetEnv()
+    return targetEnv === 'prod'
+  }
+
   const handleRestore = () => {
     if (!selectedBackup) {
       alert('Please select a backup to restore')
       return
     }
 
-    let targetDb
-    if (targetType === 'existing') {
-      const db = databases?.find((d: any) => d.id === selectedDbId)
-      if (!db) {
-        alert('Please select a target database')
+    const sourceEnv = getSourceEnv()
+    const targetEnv = getTargetEnv()
+
+    // Block dev -> prod
+    if (sourceEnv === 'dev' && targetEnv === 'prod') {
+      alert('Cannot restore a dev backup to production database')
+      return
+    }
+
+    // Require confirmation for any restore to prod
+    if (targetEnv === 'prod' && !confirmProdRestore) {
+      alert('Please check the confirmation box to restore to production')
+      return
+    }
+
+    const isEncrypted = selectedBackup.key.endsWith('.enc')
+    setRestoreResult(null)
+
+    // For restores to prod, require manual credentials
+    if (requiresManualCredentials()) {
+      if (targetType !== 'custom') {
+        alert('Restores to production require entering credentials manually for safety')
+        setTargetType('custom')
         return
       }
-      // Need to get the full db config with password - for now use custom
-      alert('For security, please enter the database credentials manually')
-      setTargetType('custom')
-      return
-    } else {
       if (!customDb.host || !customDb.database || !customDb.username || !customDb.password) {
         alert('Please fill in all database connection fields')
         return
       }
-      targetDb = customDb
+      restoreMutation.mutate({
+        s3_key: selectedBackup.key,
+        target_db: customDb,
+        is_encrypted: isEncrypted,
+        source_database_id: sourceDbId || undefined,
+        confirm_prod_restore: confirmProdRestore,
+      })
+    } else if (targetType === 'existing') {
+      // For dev targets, use stored credentials
+      if (!selectedDbId) {
+        alert('Please select a target database')
+        return
+      }
+      restoreMutation.mutate({
+        s3_key: selectedBackup.key,
+        target_database_id: selectedDbId,
+        is_encrypted: isEncrypted,
+        source_database_id: sourceDbId || undefined,
+        confirm_prod_restore: false,
+      })
+    } else {
+      // Custom credentials for dev target
+      if (!customDb.host || !customDb.database || !customDb.username || !customDb.password) {
+        alert('Please fill in all database connection fields')
+        return
+      }
+      restoreMutation.mutate({
+        s3_key: selectedBackup.key,
+        target_db: customDb,
+        is_encrypted: isEncrypted,
+        source_database_id: sourceDbId || undefined,
+        confirm_prod_restore: false,
+      })
     }
-
-    const isEncrypted = selectedBackup.key.endsWith('.enc')
-
-    setRestoreResult(null)
-    restoreMutation.mutate({
-      s3_key: selectedBackup.key,
-      target_db: targetDb,
-      is_encrypted: isEncrypted,
-    })
   }
 
   return (
@@ -137,48 +270,116 @@ export default function RestorePage() {
         <div className="bg-white rounded-lg border p-6">
           <h2 className="text-lg font-semibold mb-4">1. Select Backup from S3</h2>
 
+          {/* Source Database Selector */}
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Source Database (where backup came from)
+            </label>
+            <select
+              value={sourceDbId}
+              onChange={(e) => setSourceDbId(e.target.value)}
+              className="w-full border rounded-lg px-3 py-2 text-sm"
+            >
+              <option value="">Unknown / Not specified</option>
+              {databases?.map((db: any) => (
+                <option key={db.id} value={db.id}>
+                  {db.name} ({db.environment === 'prod' ? 'Production' : 'Development'})
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-1">
+              Select the database this backup originated from for safety checks
+            </p>
+          </div>
+
+          {/* Search and Filter Controls */}
+          <div className="space-y-3 mb-4">
+            {/* Search */}
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search backups..."
+                className="w-full border rounded-lg pl-9 pr-3 py-2 text-sm"
+              />
+            </div>
+
+            {/* Filter and Sort Row */}
+            <div className="flex gap-2">
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as SortOption)}
+                className="flex-1 border rounded-lg px-3 py-2 text-sm"
+              >
+                <option value="newest">Most Recent</option>
+                <option value="oldest">Oldest First</option>
+                <option value="largest">Largest First</option>
+                <option value="smallest">Smallest First</option>
+                <option value="name">Name (A-Z)</option>
+              </select>
+              <select
+                value={filterBy}
+                onChange={(e) => setFilterBy(e.target.value as FilterOption)}
+                className="flex-1 border rounded-lg px-3 py-2 text-sm"
+              >
+                <option value="all">All Types</option>
+                <option value="encrypted">Encrypted Only</option>
+                <option value="unencrypted">Unencrypted Only</option>
+              </select>
+            </div>
+          </div>
+
           {loadingBackups ? (
             <div className="flex items-center justify-center h-32">
               <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
             </div>
-          ) : s3Backups?.backups?.length === 0 ? (
+          ) : filteredBackups.length === 0 ? (
             <div className="text-center text-gray-500 py-8">
-              No backups found in S3
+              {s3Backups?.backups?.length === 0
+                ? 'No backups found in S3'
+                : 'No backups match your search'}
             </div>
           ) : (
-            <div className="space-y-2 max-h-96 overflow-y-auto">
-              {s3Backups?.backups?.map((backup: any) => (
-                <div
-                  key={backup.key}
-                  onClick={() => setSelectedBackup(backup)}
-                  className={`p-3 rounded-lg border cursor-pointer transition-colors ${
-                    selectedBackup?.key === backup.key
-                      ? 'border-blue-500 bg-blue-50'
-                      : 'border-gray-200 hover:border-gray-300'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Database className="h-4 w-4 text-gray-400" />
-                      <span className="font-medium text-sm truncate max-w-[200px]">
-                        {backup.key.split('/').pop()}
+            <>
+              <p className="text-xs text-gray-500 mb-2">
+                Showing {filteredBackups.length} of {s3Backups?.backups?.length || 0} backups
+              </p>
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {filteredBackups.map((backup: any) => (
+                  <div
+                    key={backup.key}
+                    onClick={() => setSelectedBackup(backup)}
+                    className={`p-3 rounded-lg border cursor-pointer transition-colors ${
+                      selectedBackup?.key === backup.key
+                        ? 'border-blue-500 bg-blue-50'
+                        : 'border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Database className="h-4 w-4 text-gray-400" />
+                        <span className="font-medium text-sm truncate max-w-[200px]">
+                          {backup.key.split('/').pop()}
+                        </span>
+                      </div>
+                      {backup.key.endsWith('.enc') && (
+                        <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">
+                          Encrypted
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-4 mt-1 text-xs text-gray-500">
+                      <span>{formatBytes(backup.size)}</span>
+                      <span>
+                        {formatDistanceToNow(new Date(backup.last_modified), { addSuffix: true })}
                       </span>
                     </div>
-                    {backup.key.endsWith('.enc') && (
-                      <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">
-                        Encrypted
-                      </span>
-                    )}
                   </div>
-                  <div className="flex items-center gap-4 mt-1 text-xs text-gray-500">
-                    <span>{formatBytes(backup.size)}</span>
-                    <span>
-                      {formatDistanceToNow(new Date(backup.last_modified), { addSuffix: true })}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            </>
           )}
         </div>
 
@@ -187,43 +388,53 @@ export default function RestorePage() {
           <h2 className="text-lg font-semibold mb-4">2. Select Target Database</h2>
 
           <div className="space-y-4">
-            <div className="flex gap-4">
-              <label className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  checked={targetType === 'existing'}
-                  onChange={() => setTargetType('existing')}
-                  className="h-4 w-4"
-                />
-                <span className="text-sm">Existing Database</span>
-              </label>
-              <label className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  checked={targetType === 'custom'}
-                  onChange={() => setTargetType('custom')}
-                  className="h-4 w-4"
-                />
-                <span className="text-sm">Custom Connection</span>
-              </label>
-            </div>
+            {/* Only show radio options if target is dev */}
+            {!requiresManualCredentials() ? (
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    checked={targetType === 'existing'}
+                    onChange={() => setTargetType('existing')}
+                    className="h-4 w-4"
+                  />
+                  <span className="text-sm">Existing Database</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    checked={targetType === 'custom'}
+                    onChange={() => setTargetType('custom')}
+                    className="h-4 w-4"
+                  />
+                  <span className="text-sm">Custom Connection</span>
+                </label>
+              </div>
+            ) : (
+              <div className="text-sm text-yellow-700 bg-yellow-50 p-3 rounded-lg">
+                Restores to production require entering credentials manually.
+              </div>
+            )}
 
-            {targetType === 'existing' ? (
+            {targetType === 'existing' && !requiresManualCredentials() ? (
               <div>
                 <select
                   value={selectedDbId}
-                  onChange={(e) => setSelectedDbId(e.target.value)}
+                  onChange={(e) => {
+                    setSelectedDbId(e.target.value)
+                    setConfirmProdRestore(false) // Reset confirmation when target changes
+                  }}
                   className="w-full border rounded-lg px-3 py-2"
                 >
                   <option value="">Select a database...</option>
                   {databases?.map((db: any) => (
                     <option key={db.id} value={db.id}>
-                      {db.name} ({db.host}:{db.port}/{db.database})
+                      {db.name} ({db.environment === 'prod' ? '🔴 PROD' : '🟢 DEV'}) - {db.host}:{db.port}/{db.database}
                     </option>
                   ))}
                 </select>
                 <p className="text-xs text-gray-500 mt-2">
-                  You'll need to enter credentials for security
+                  Stored credentials will be used for dev/unknown restores
                 </p>
               </div>
             ) : (
@@ -295,6 +506,48 @@ export default function RestorePage() {
         </div>
       </div>
 
+      {/* Environment Warning */}
+      {getRestoreWarning() && (
+        <div className={`rounded-lg border p-4 ${
+          getRestoreWarning()?.type === 'error'
+            ? 'bg-red-50 border-red-200'
+            : 'bg-yellow-50 border-yellow-200'
+        }`}>
+          <div className="flex items-start gap-3">
+            <AlertTriangle className={`h-5 w-5 mt-0.5 ${
+              getRestoreWarning()?.type === 'error' ? 'text-red-600' : 'text-yellow-600'
+            }`} />
+            <div className="flex-1">
+              <h3 className={`font-medium ${
+                getRestoreWarning()?.type === 'error' ? 'text-red-800' : 'text-yellow-800'
+              }`}>
+                {getRestoreWarning()?.type === 'error' ? 'Restore Blocked' : 'Confirmation Required'}
+              </h3>
+              <p className={`text-sm mt-1 ${
+                getRestoreWarning()?.type === 'error' ? 'text-red-700' : 'text-yellow-700'
+              }`}>
+                {getRestoreWarning()?.message}
+              </p>
+
+              {/* Confirmation checkbox for prod->prod */}
+              {getRestoreWarning()?.type === 'warning' && (
+                <label className="flex items-center gap-2 mt-3">
+                  <input
+                    type="checkbox"
+                    checked={confirmProdRestore}
+                    onChange={(e) => setConfirmProdRestore(e.target.checked)}
+                    className="h-4 w-4 rounded border-gray-300"
+                  />
+                  <span className="text-sm font-medium text-yellow-800">
+                    I understand I am restoring production data to production
+                  </span>
+                </label>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Restore Button */}
       <div className="bg-white rounded-lg border p-6">
         <div className="flex items-center justify-between">
@@ -305,10 +558,21 @@ export default function RestorePage() {
                 ? `Selected: ${selectedBackup.key.split('/').pop()}`
                 : 'Select a backup from the list above'}
             </p>
+            {sourceDbId && selectedDbId && (
+              <p className="text-xs text-gray-400 mt-1">
+                {getSourceEnv() === 'prod' ? '🔴 Production' : '🟢 Development'} → {getTargetEnv() === 'prod' ? '🔴 Production' : '🟢 Development'}
+              </p>
+            )}
           </div>
           <button
             onClick={handleRestore}
-            disabled={!selectedBackup || restoreMutation.isPending || isPolling}
+            disabled={
+              !selectedBackup ||
+              restoreMutation.isPending ||
+              isPolling ||
+              getRestoreWarning()?.type === 'error' ||
+              (getRestoreWarning()?.type === 'warning' && !confirmProdRestore)
+            }
             className="flex items-center gap-2 bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {restoreMutation.isPending || isPolling ? (
